@@ -220,15 +220,6 @@ const SideNav = ({ children }: { children: React.ReactNode }) => {
                 ))}
               </div>
             </div>
-
-            {/* Sidebar Footer info */}
-            <div className="p-3 bg-base-100 rounded-2xl border border-base-300 text-xs text-base-content/60 flex flex-col gap-1">
-              <div className="font-bold text-base-content flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                AI Neural Engine v2.4
-              </div>
-              <div>Up to 1GB video & image detection</div>
-            </div>
           </div>
         </div>
       </div>
