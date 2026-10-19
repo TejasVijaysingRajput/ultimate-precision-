@@ -122,13 +122,13 @@ const Result = () => {
               duration: d.result?.duration || 0,
               average_confidence: d.result?.averageConfidence || 0,
               timeline: d.result?.timeline || [],
-              detected_frames: (d.result?.detectedFrames || []).map((f: any) => ({
-                frameIdx: f.frameIdx,
-                timestampSeconds: f.timestampSeconds,
-                timestamp: f.timestamp,
-                confidence: f.confidence,
-                label: f.label,
-                imageUrl: f.imageUrl,
+              detected_frames: (d.result?.detectedFrames || (d.result as any)?.detected_frames || []).map((f: any) => ({
+                frameIdx: f.frameIdx ?? f.frame_idx ?? 0,
+                timestampSeconds: typeof f.timestampSeconds === "number" ? f.timestampSeconds : (typeof f.timestamp_seconds === "number" ? f.timestamp_seconds : 0),
+                timestamp: formatExactTimestamp(f.timestampSeconds ?? f.timestamp_seconds, f.timestamp),
+                confidence: typeof f.confidence === "number" ? f.confidence : 0,
+                label: f.label || "Violent",
+                imageUrl: f.imageUrl || f.image_path || "",
               })),
               has_bounding_box: d.result?.hasBoundingBox ?? false,
               note: d.result?.note ?? null,
@@ -152,10 +152,20 @@ const Result = () => {
         const stored = sessionStorage.getItem("videoAnalysisResult");
         if (stored) {
           const parsed = JSON.parse(stored);
+          const rawFrames = parsed.detected_frames || parsed.detectedFrames || [];
+          const mappedFrames = rawFrames.map((f: any) => ({
+            frameIdx: f.frameIdx ?? f.frame_idx ?? 0,
+            timestampSeconds: typeof f.timestampSeconds === "number" ? f.timestampSeconds : (typeof f.timestamp_seconds === "number" ? f.timestamp_seconds : 0),
+            timestamp: formatExactTimestamp(f.timestampSeconds ?? f.timestamp_seconds, f.timestamp),
+            confidence: typeof f.confidence === "number" ? f.confidence : 0,
+            label: f.label || "Violent",
+            imageUrl: f.imageUrl || f.image_path || "",
+          }));
+
           setResponse({
             ...parsed,
             media_type: parsed.media_type || (parsed.image_url ? "image" : "video"),
-            detected_frames: parsed.detected_frames || [],
+            detected_frames: mappedFrames,
           });
           setLoading(false);
           return;
@@ -170,7 +180,19 @@ const Result = () => {
     loadReport();
   }, [reportId]);
 
-  // Video time formatting helper
+  // Exact timestamp formatting helper (HH:MM:SS format, e.g. 00:00:05)
+  const formatExactTimestamp = (timestampSeconds?: number, timestampStr?: string) => {
+    if (timestampStr && timestampStr.split(":").length === 3) {
+      return timestampStr;
+    }
+    const s = Math.max(0, Math.floor(timestampSeconds || 0));
+    const hours = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const remSecs = s % 60;
+    return `${hours < 10 ? "0" : ""}${hours}:${mins < 10 ? "0" : ""}${mins}:${remSecs < 10 ? "0" : ""}${remSecs}`;
+  };
+
+  // Video time formatting helper (MM:SS)
   const formatTime = (secs: number) => {
     if (!secs || isNaN(secs)) return "00:00";
     const mins = Math.floor(secs / 60);
@@ -263,13 +285,25 @@ const Result = () => {
   };
 
   const handleSeekToFrame = (timestampSeconds: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = Math.max(0, timestampSeconds);
-      videoRef.current.play();
-      setIsPlaying(true);
-      setActiveFrameTime(timestampSeconds);
-      playerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (activeTab !== "original") {
+      setActiveTab("original");
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.currentTime = Math.max(0, timestampSeconds);
+          videoRef.current.play().catch(() => {});
+          setIsPlaying(true);
+          setActiveFrameTime(timestampSeconds);
+        }
+      }, 100);
+    } else {
+      if (videoRef.current) {
+        videoRef.current.currentTime = Math.max(0, timestampSeconds);
+        videoRef.current.play().catch(() => {});
+        setIsPlaying(true);
+        setActiveFrameTime(timestampSeconds);
+      }
     }
+    playerContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   // Delete Report Handler
@@ -968,6 +1002,7 @@ Certified by Ultimate Precision Surveillance AI Neural Engine
             {detectedFrames.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
                 {detectedFrames.map((frame, index) => {
+                  const exactTimestamp = formatExactTimestamp(frame.timestampSeconds, frame.timestamp);
                   const isActive =
                     activeFrameTime !== null &&
                     Math.abs(activeFrameTime - frame.timestampSeconds) < 0.5;
@@ -978,21 +1013,23 @@ Certified by Ultimate Precision Surveillance AI Neural Engine
                       onClick={() => handleSeekToFrame(frame.timestampSeconds)}
                       className={`group cursor-pointer rounded-2xl overflow-hidden border transition-all duration-200 bg-base-100 flex flex-col shadow-sm hover:shadow-xl hover:-translate-y-1 ${
                         isActive
-                          ? "border-primary ring-2 ring-primary/40 shadow-primary/20"
+                          ? "border-primary ring-2 ring-primary/40 shadow-primary/20 scale-[1.02]"
                           : "border-base-300 hover:border-primary/60"
                       }`}
+                      title={`Click to jump video to ${exactTimestamp} (${frame.confidence}% Confidence)`}
                     >
                       {/* Image Thumbnail with Overlay */}
                       <div className="relative aspect-video bg-black overflow-hidden">
                         <img
                           src={frame.imageUrl}
-                          alt={`Frame at ${frame.timestamp}`}
+                          alt={`Violent frame at ${exactTimestamp}`}
                           className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                          loading="lazy"
                         />
-                        {/* Timestamp badge */}
-                        <div className="absolute top-2 left-2 bg-black/75 text-white text-[10px] font-mono px-2 py-0.5 rounded-md backdrop-blur-sm flex items-center gap-1">
+                        {/* Exact Timestamp badge: e.g. 00:00:05 */}
+                        <div className="absolute top-2 left-2 bg-black/80 text-white text-[10px] font-mono px-2 py-0.5 rounded-md backdrop-blur-sm flex items-center gap-1 shadow-sm">
                           <Clock className="w-3 h-3 text-primary" />
-                          {frame.timestamp}
+                          {exactTimestamp}
                         </div>
                         {/* Play overlay icon on hover */}
                         <div className="absolute inset-0 bg-primary/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition no-print">
@@ -1006,9 +1043,8 @@ Certified by Ultimate Precision Surveillance AI Neural Engine
                       <div className="p-2.5 flex flex-col gap-1">
                         <div className="flex items-center justify-between">
                           <span
-                            className={`badge badge-xs font-semibold ${
-                              frame.confidence > 50 ? "badge-error text-white" : "badge-warning"
-                            }`}
+                            className="badge badge-xs font-semibold badge-error text-white"
+                            title={`AI Confidence: ${frame.confidence}%`}
                           >
                             {frame.confidence}% Conf.
                           </span>
@@ -1016,7 +1052,7 @@ Certified by Ultimate Precision Surveillance AI Neural Engine
                             #{frame.frameIdx}
                           </span>
                         </div>
-                        <div className="text-[11px] font-bold text-base-content truncate">
+                        <div className="text-[11px] font-bold text-rose-400 truncate">
                           {frame.label}
                         </div>
                       </div>
@@ -1027,7 +1063,7 @@ Certified by Ultimate Precision Surveillance AI Neural Engine
             ) : (
               <div className="p-8 bg-base-100 rounded-2xl border border-base-300 text-center text-sm text-base-content/70">
                 <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
-                No individual violent frames detected in this video footage.
+                No violent frames detected in this video.
               </div>
             )}
           </div>

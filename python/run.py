@@ -12,7 +12,7 @@ class FixedDepthwiseConv2D(DepthwiseConv2D):
         kwargs.pop('groups', None)
         super().__init__(*args, **kwargs)
 
-# Load the model
+# Load the pretrained neural network model
 model = load_model('python/violence_detection_model.h5', custom_objects={'DepthwiseConv2D': FixedDepthwiseConv2D})
 
 def create_video_from_frames(output_path, frames_dir, fps=30, frame_size=(128, 128)):
@@ -22,22 +22,28 @@ def create_video_from_frames(output_path, frames_dir, fps=30, frame_size=(128, 1
     image_files.sort() 
 
     if not image_files:
-        print("No images found in the directory!", file=sys.stderr)
         return None
-    clip = ImageSequenceClip(image_files, fps=fps)
-    clip.write_videofile(output_path, codec="libx264", logger=None)
-
+    try:
+        clip = ImageSequenceClip(image_files, fps=fps)
+        clip.write_videofile(output_path, codec="libx264", logger=None)
+        return output_path
+    except Exception as e:
+        print(f"Warning creating highlight clip: {e}", file=sys.stderr)
+        return None
 
 def format_time(seconds):
-    mins = int(seconds // 60)
-    secs = int(seconds % 60)
-    return f"{mins:02d}:{secs:02d}"
+    s = max(0, int(seconds))
+    hours = s // 3600
+    mins = (s % 3600) // 60
+    secs = s % 60
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
 
 def preprocess_image(image_path, frames_dir='public/violent_frames', img_size=(128, 128)):
-    if os.path.exists(frames_dir):
+    norm_frame_dir = os.path.normpath(frames_dir)
+    if os.path.exists(norm_frame_dir):
         import shutil
-        shutil.rmtree(frames_dir, ignore_errors=True)
-    os.makedirs(frames_dir, exist_ok=True)
+        shutil.rmtree(norm_frame_dir, ignore_errors=True)
+    os.makedirs(norm_frame_dir, exist_ok=True)
 
     img = cv2.imread(image_path)
     if img is None:
@@ -47,38 +53,41 @@ def preprocess_image(image_path, frames_dir='public/violent_frames', img_size=(1
     normalized = resized.astype('float32') / 255.0
 
     raw_prediction = float(model.predict(np.expand_dims(normalized, axis=0), verbose=0)[0][0])
-    confidence_pct = round(raw_prediction * 100, 2)
-    is_violent = raw_prediction > 0.5
+    confidence_pct = round(raw_prediction * 100, 1)
+    is_violent = raw_prediction >= 0.50
     label = "Violent" if is_violent else "Non-Violent"
 
-    saved_frame_path = os.path.join(frames_dir, "analyzed_image_0.jpg").replace('\\', '/')
+    saved_frame_path = os.path.normpath(os.path.join(norm_frame_dir, "analyzed_image_0.jpg"))
     cv2.imwrite(saved_frame_path, img)
+    rel_frame_path = saved_frame_path.replace('\\', '/')
 
-    detected_frame = {
-        "frame_idx": 0,
-        "timestamp_seconds": 0.0,
-        "timestamp": "00:00",
-        "confidence": confidence_pct,
-        "label": label,
-        "image_path": saved_frame_path
-    }
+    detected_frames = []
+    if is_violent:
+        detected_frames.append({
+            "frame_idx": 0,
+            "timestamp_seconds": 0.0,
+            "timestamp": "00:00:00",
+            "confidence": confidence_pct,
+            "label": label,
+            "image_path": rel_frame_path
+        })
 
     return {
         "media_type": "image",
         "class": label,
-        "violence_percentage": confidence_pct,
+        "violence_percentage": confidence_pct if is_violent else 0.0,
         "violent_frames": 1 if is_violent else 0,
         "total_frames": 1,
         "fps": 0,
         "duration": 0,
         "average_confidence": confidence_pct,
         "timeline": [],
-        "detected_frames": [detected_frame],
+        "detected_frames": detected_frames,
         "output_video": None,
-        "first_frame": saved_frame_path,
-        "last_frame": saved_frame_path,
+        "first_frame": rel_frame_path,
+        "last_frame": rel_frame_path,
         "has_bounding_box": False,
-        "note": "Existing AI model performs whole-frame classification; no spatial bounding boxes are output."
+        "note": "AI model evaluates whole-frame deep learning features."
     }
 
 def preprocess_video(video_path, violent_frame_dir='public/violent_frames', output_video_path='public/violent_video.mp4', img_size=(128, 128), save_violent_frames=True):
@@ -94,14 +103,18 @@ def preprocess_video(video_path, violent_frame_dir='public/violent_frames', outp
     violent_indices = []
     detected_frames_list = []
 
+    norm_frame_dir = os.path.normpath(violent_frame_dir)
     if save_violent_frames:
-        if os.path.exists(violent_frame_dir):
+        if os.path.exists(norm_frame_dir):
             import shutil
-            shutil.rmtree(violent_frame_dir, ignore_errors=True)
-        os.makedirs(violent_frame_dir, exist_ok=True)
+            shutil.rmtree(norm_frame_dir, ignore_errors=True)
+        os.makedirs(norm_frame_dir, exist_ok=True)
 
     frame_idx = 0
     total_predictions = []
+    batch_size = 32
+    batch_frames = []
+    batch_meta = []
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -110,28 +123,65 @@ def preprocess_video(video_path, violent_frame_dir='public/violent_frames', outp
 
         resized_frame = cv2.resize(frame, img_size)
         normalized_frame = resized_frame.astype('float32') / 255.0
+        batch_frames.append(normalized_frame)
+        batch_meta.append((frame_idx, frame))
+        frame_idx += 1
 
-        if save_violent_frames:
-            prediction = float(model.predict(np.expand_dims(normalized_frame, axis=0), verbose=0)[0][0])
-            total_predictions.append(prediction)
-            if prediction > 0.2:  
-                violent_frame_path = os.path.join(violent_frame_dir, f'violent_frame_{frame_idx}.jpg').replace('\\', '/')
-                cv2.imwrite(violent_frame_path, frame)
-                violent_frames.append(violent_frame_path)
-                timestamp_sec = round(frame_idx / fps, 2)
-                violent_indices.append((frame_idx, timestamp_sec, prediction))
+        if len(batch_frames) >= batch_size:
+            predictions = model.predict(np.array(batch_frames), batch_size=batch_size, verbose=0)
+            for i, pred in enumerate(predictions):
+                pred_val = float(pred[0])
+                total_predictions.append(pred_val)
+                f_idx, orig_frame = batch_meta[i]
+
+                # Classification threshold for violent frames
+                if pred_val >= 0.50:
+                    violent_frame_path = os.path.normpath(os.path.join(norm_frame_dir, f'violent_frame_{f_idx}.jpg'))
+                    cv2.imwrite(violent_frame_path, orig_frame)
+                    rel_img_path = violent_frame_path.replace('\\', '/')
+                    violent_frames.append(rel_img_path)
+                    
+                    timestamp_sec = round(f_idx / fps, 2)
+                    violent_indices.append((f_idx, timestamp_sec, pred_val))
+                    
+                    detected_frames_list.append({
+                        "frame_idx": f_idx,
+                        "timestamp_seconds": timestamp_sec,
+                        "timestamp": format_time(timestamp_sec),
+                        "confidence": round(pred_val * 100, 1),
+                        "label": "Violent",
+                        "image_path": rel_img_path
+                    })
+            batch_frames.clear()
+            batch_meta.clear()
+
+    # Process remaining batch frames
+    if batch_frames:
+        predictions = model.predict(np.array(batch_frames), batch_size=len(batch_frames), verbose=0)
+        for i, pred in enumerate(predictions):
+            pred_val = float(pred[0])
+            total_predictions.append(pred_val)
+            f_idx, orig_frame = batch_meta[i]
+
+            if pred_val >= 0.50:
+                violent_frame_path = os.path.normpath(os.path.join(norm_frame_dir, f'violent_frame_{f_idx}.jpg'))
+                cv2.imwrite(violent_frame_path, orig_frame)
+                rel_img_path = violent_frame_path.replace('\\', '/')
+                violent_frames.append(rel_img_path)
                 
-                label = "Violent" if prediction > 0.5 else "Potential Violence"
+                timestamp_sec = round(f_idx / fps, 2)
+                violent_indices.append((f_idx, timestamp_sec, pred_val))
+                
                 detected_frames_list.append({
-                    "frame_idx": frame_idx,
+                    "frame_idx": f_idx,
                     "timestamp_seconds": timestamp_sec,
                     "timestamp": format_time(timestamp_sec),
-                    "confidence": round(prediction * 100, 1),
-                    "label": label,
-                    "image_path": violent_frame_path
+                    "confidence": round(pred_val * 100, 1),
+                    "label": "Violent",
+                    "image_path": rel_img_path
                 })
-
-        frame_idx += 1
+        batch_frames.clear()
+        batch_meta.clear()
 
     cap.release()
 
@@ -139,8 +189,8 @@ def preprocess_video(video_path, violent_frame_dir='public/violent_frames', outp
     violent_frames_count = len(violent_frames)
     duration_sec = total_frames / fps if fps > 0 else 0
 
-    violence_percentage = (violent_frames_count / total_frames) * 100 if total_frames > 0 else 0
-    video_class = "Violent" if violence_percentage > 50 else "Non-Violent"
+    violence_percentage = round((violent_frames_count / total_frames) * 100, 2) if total_frames > 0 else 0.0
+    video_class = "Violent" if violent_frames_count > 0 else "Non-Violent"
 
     # Group timestamps into incident timeline
     timeline = []
@@ -182,45 +232,32 @@ def preprocess_video(video_path, violent_frame_dir='public/violent_frames', outp
     last_frame = None
 
     if violent_frames:
-        os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-        create_video_from_frames(output_video_path, violent_frame_dir, fps=min(int(fps), 60))
-        output_video_file = output_video_path.replace('\\', '/')
-        first_frame = violent_frames[0].replace('\\', '/')
-        last_frame = violent_frames[-1].replace('\\', '/')
-
-    # Ensure chronological order and smart sampling if more than 60 frames
-    if len(detected_frames_list) > 60:
-        step = len(detected_frames_list) / 60.0
-        sampled_indices = set()
-        for i in range(60):
-            idx = int(round(i * step))
-            if idx < len(detected_frames_list):
-                sampled_indices.add(idx)
-        # Always include highest confidence frames
-        top_indices = sorted(range(len(detected_frames_list)), key=lambda k: detected_frames_list[k]["confidence"], reverse=True)[:10]
-        for tidx in top_indices:
-            sampled_indices.add(tidx)
-        sorted_sampled = sorted(list(sampled_indices))
-        final_detected_frames = [detected_frames_list[i] for i in sorted_sampled]
-    else:
-        final_detected_frames = detected_frames_list
+        try:
+            norm_output_vid = os.path.normpath(output_video_path)
+            os.makedirs(os.path.dirname(norm_output_vid), exist_ok=True)
+            created = create_video_from_frames(norm_output_vid, norm_frame_dir, fps=min(int(fps), 60))
+            if created and os.path.exists(norm_output_vid):
+                output_video_file = norm_output_vid.replace('\\', '/')
+            first_frame = violent_frames[0].replace('\\', '/')
+            last_frame = violent_frames[-1].replace('\\', '/')
+        except Exception as clip_err:
+            print(f"Highlight clip note: {clip_err}", file=sys.stderr)
 
     return {
         "media_type": "video",
         "class": video_class,
-        "violence_percentage": round(violence_percentage, 2),
+        "violence_percentage": violence_percentage,
         "violent_frames": violent_frames_count,
         "total_frames": total_frames,
         "fps": round(fps, 2),
         "duration": round(duration_sec, 2),
         "average_confidence": round(avg_confidence * 100, 1),
         "timeline": timeline,
-        "detected_frames": final_detected_frames,
+        "detected_frames": detected_frames_list,
         "output_video": output_video_file,
         "first_frame": first_frame,
         "last_frame": last_frame
     }
-
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
 

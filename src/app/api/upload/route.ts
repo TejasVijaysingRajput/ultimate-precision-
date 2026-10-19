@@ -113,33 +113,39 @@ export async function POST(req: NextRequest) {
     const temp = JSON.parse(stdout.substring(startIdx, endIdx + 1));
     console.log("Inference output:", temp);
 
+    const normalizeWebPath = (filePath?: string | null): string | null => {
+      if (!filePath) return null;
+      const clean = filePath.replace(/\\/g, "/").replace(/^(\.\/)?public\//, "").replace(/^\//, "");
+      return `/${clean}`;
+    };
+
     // Build web-accessible URLs
     const webClipUrl =
       temp.output_video && fs.existsSync(temp.output_video)
-        ? `/${temp.output_video.replace(/^public\//, "").replace(/\\/g, "/")}`
+        ? normalizeWebPath(temp.output_video)
         : null;
 
     let webFirstFrame: string | null = null;
     let webLastFrame: string | null = null;
 
     if (temp.first_frame && fs.existsSync(temp.first_frame)) {
-      webFirstFrame = `/${temp.first_frame.replace(/^public\//, "").replace(/\\/g, "/")}`;
+      webFirstFrame = normalizeWebPath(temp.first_frame);
     }
     if (temp.last_frame && fs.existsSync(temp.last_frame)) {
-      webLastFrame = `/${temp.last_frame.replace(/^public\//, "").replace(/\\/g, "/")}`;
+      webLastFrame = normalizeWebPath(temp.last_frame);
     }
 
     // Map detected frames to web URLs
     const rawDetectedFrames = Array.isArray(temp.detected_frames) ? temp.detected_frames : [];
     const mappedDetectedFrames = rawDetectedFrames.map((frame: any) => {
-      const cleanImgPath = (frame.image_path || "").replace(/^public\//, "").replace(/\\/g, "/");
+      const cleanImgPath = normalizeWebPath(frame.image_path);
       return {
         frameIdx: frame.frame_idx ?? 0,
         timestampSeconds: frame.timestamp_seconds ?? 0,
-        timestamp: frame.timestamp ?? "00:00",
+        timestamp: frame.timestamp ?? "00:00:00",
         confidence: frame.confidence ?? 0,
         label: frame.label ?? "Violent",
-        imageUrl: cleanImgPath ? (cleanImgPath.startsWith("/") ? cleanImgPath : `/${cleanImgPath}`) : webMediaUrl,
+        imageUrl: cleanImgPath || webMediaUrl,
       };
     });
 
